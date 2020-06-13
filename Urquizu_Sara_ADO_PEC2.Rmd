@@ -1,0 +1,808 @@
+---
+title: '<br> <br> <br> <br> PAC 2: Análisis de datos Ómicos'
+author: "Sara Urquizu Rojo"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    toc: yes
+---
+
+<br>Dirección URL del repositorio en GitHub: https://github.com/saraur/ADO-PAC2.git
+
+
+## Abstract
+
+En este estudio, se pretende comprobar los efectos que tienen dos tipos de infiltración: la infiltración en pequeños focos y la infiltración extensiva en linfoides en tejidos tiroideos. Para ello se ha realizado un análisis de RNA-seq de las muestras con un posterior análisis bioinformático de los datos donde se ha visto que los genes diferencialmente expresados son solo unos pocos del total, pero la variabilidad de los grupos es muy alta.
+
+## Objetivo
+
+El objetivo de este estudio es comprobar los efectos que tienen 2 tipos distintos de infiltración en tejidos tiroideos. 
+
+## Materiales y métodos
+
+El experimento tiene un total de 292 muestras, pertenecientes a 3 grupos distintos:
+ 
+ - 236 muestras de _tejido no infiltrado_ (NIT).
+ 
+ - 42 muestras de _tejido infiltrado en pequeños focos_ (SFI).
+ 
+ - 14 muestras de _tejido infiltrado extensivamente en linfoides_ (ELI).
+ 
+
+De estas muestras, hacemos un filtraje para quedarnos con 30 muestras: 10 de cada grupo. Esto lo hacemos subseteando cada grupo en un dataframe distinto y combinando las funciones _sample_ y _nrow_ extraemos 10 muestras de cada subset y se crea un dataframe con los 3 subsets.
+
+Para el análisis de los datos se ha usado la plataforma RStudio y se ha seguido, con algunos cambios, el modelo de estudio de _Gonzalo, Ricardo y Sanchez-Pla, Alex (2020)_[1] sobre análisis estadístico de RNA-seq.
+
+
+Así pues, este estudio tiene 1 factor con 3 niveles: las muestras de tiroides con tejido no infiltrado, las muestras de tejido infiltrado en pequeños focos y las muestras de tejido infiltrado extensivamente en linfoides. Estas muestras vienen tratadas con dos tipos de analisis distintos: _Allele-Specific Expression_	y _RNA Seq (NGS)_.
+
+Con los datos crudos, se ha hecho un filtraje de los datos que representan menos de 1 conteo por millón en al menos dos muestras y se ha procedido a normalizar los datos.
+
+Para el análisis exploratorio de los datos, se ha creado un mapa de calor para ver la similitud entre las muestras con los paquetes para R _pheatmap_ y _RColorBrewer_. También con el paquete _PoiClaClu_ se ha calculado la similitud de muestras según la distancia de Poisson.
+
+Para identificar qué genes están diferencialmente expresados se han pasado los datos a formato "DESeq" y se ha usado la función "result" del paquete _DESeq2_.
+
+
+############# Finalmente se ha hecho un análisis de significación biológica de las distintas comparaciones: tejido no infiltrado (NIT) contra tejido infiltrado en pequeños focos (SFI), tejido no infiltraso (NIT) contra tejido infiltrado extensivamente en linfoides (ELI) y tejido infiltrado en pequeños focos (SFI) contra tejido infiltrado extensivamente en linfoides (ELI).
+
+
+
+
+```{r echo = FALSE, results='hide', warning=FALSE}
+# Creamos dos directorios para tener clasificados los datos y los resultados:
+dir.create("data")
+dir.create("results")
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Librerías usadas para el codigo:
+library(edgeR)
+library(DEFormats)
+library(pheatmap)
+library(RColorBrewer)
+library(PoiClaClu)
+library(vsn)
+library(SGSeq)
+library(DESeq)
+library(DESeq2)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(limma)
+library(Gviz)
+library(ReportingTools)
+
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+## 1. Definición de los datos
+
+# Lectura de los datos:
+targets <- read.csv("data/targets.csv", header = TRUE, sep=",")
+counts <- read.csv("data/counts.csv", header = FALSE, sep = ";")
+
+# Creamos los vectores que van a ser los nombres de las filas y columnas:
+
+nomcol <- as.vector(counts$V1) # Nombres de ENSEMBL
+nomcol <- gsub("\\..*", "", nomcol, fixed = FALSE) # Corregiremos los nombres de ENSEMBL
+  # Ponemos los nombres a las columnas:
+    counts <- data.frame(t(counts)) # Transponemos la base de datos
+    colnames(counts) <- nomcol # Cambiamos el nombre de las columnas
+    
+nom <- as.vector(counts[,1]) # Nombres de genes
+  # Ponemos nombres a las columnas:
+    counts <- data.frame(t(counts)) # Transponemos la base de datos
+    colnames(counts)[1:293] <- nom # Cambiamos el nombre de las columnas
+    counts <- data.frame(t(counts)) # Recolocamos la base de datos
+  # Ponemos titulo a la columna 1:
+    colnames(counts)[1] <- "Sample_Name"
+  counts = counts[-1,] # Eliminamos la fila usada para los titulos
+    
+    
+nom.tar <- as.vector(targets$Sample_Name) # Nombres de genes
+  # Ponemos nombres a las columnas
+    targets <- data.frame(t(targets))
+    colnames(targets) <- nom.tar
+    targets <- data.frame(t(targets)) # Recolocamos la base de datos
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+group.NIT <- subset(targets, targets$Group == "NIT")
+group.NIT <- group.NIT[sample(nrow(group.NIT), 10), ]
+
+group.SFI <- subset(targets, targets$Group == "SFI")
+group.SFI <- group.SFI[sample(nrow(group.SFI), 10), ]
+
+group.ELI <- subset(targets, targets$Group == "ELI") 
+group.ELI <- group.ELI[sample(nrow(group.ELI), 10), ]
+
+# Creamos un dataframe nuevo con las 10 muestras aleatorias de cada grupo:  
+groups.10 <- rbind(group.ELI, group.NIT, group.SFI)
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Extraemos de la base de datos "counts" aquellos datos que pertenecen a la submuestra de 10 muestras aleatorias de cada tipo que hemos escogido:
+
+group.10 <- merge(groups.10,counts, by = "Sample_Name")
+count.study <- dplyr::select(group.10, -Sample_Name, -Experiment, -SRA_Sample, -Grupo_analisis, -body_site, -molecular_data_type, -sex, -Group, ShortName)
+group.study <- dplyr::select(group.10, Group)
+
+group.study <- as.vector.factor(group.study$Group)
+
+
+nam2 <- c(as.vector(count.study[1:30,1])) # Creamos un vector con la primera columna para usarla de titulo
+
+count.study <- data.frame(t(count.study)) # Transponemos la base de datos
+colnames(count.study)[1:30] <- nam2 # Cambiamos el nombre de todas las columnas
+
+count.study = count.study[-1,] # Eliminamos la primera fila que ya hemos convertido en titulos de columna
+count.study[] <- lapply(count.study, as.numeric) # Pasamos todos los datos a formato númerico
+
+
+# Creamos el vector "geneid" para usarlo en la lista DGE:
+gene.id = data.frame(nomcol[2:56203])
+
+
+
+group.count.study <- DGEList(counts=count.study, group = factor(group.study), genes = gene.id)
+```
+
+
+## Resultados
+
+### Filtraje y normalización de los datos
+
+En primer lugar, se ha hecho un filtraje de los datos y una normalización para comprobar la calidad de las muestras. Como podemos ver, el filtraje ha reducido el número de muestras. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# 2. PREPROCESADO DE LOS DATOS: FILTRAJE Y NORMALIZACIÓN
+
+# Filtraje de los datos:
+print(c("El número incial de datos es",nrow(group.count.study))) # Contamos el número incial de filas)
+
+group.count.study <- group.count.study[rowSums(group.count.study$counts) > 1, ]
+countsPerMillion <- cpm(group.count.study)
+countCheck <- countsPerMillion > 1
+
+keep <- which(rowSums(countCheck) >= 2)
+study.filter <- group.count.study[keep,]
+
+print(c("El número final de datos es",nrow(study.filter))) # comprobamos que el filtraje ha reducido el número de filas
+
+
+# Normalización de los datos:
+group.study.norm <- calcNormFactors(study.filter, method="TMM")
+```
+
+En los gráficos siguientes, se observa la diferencia de los datos no normalizados y la normalización de los datos.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Comprobamos la normalización:
+plotMDS(group.count.study)
+```
+_Fig 1. Diagrama de dispersión de los datos crudos_
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+plotMDS(group.study.norm)
+```
+_Fig 2. Diagrama de dispersión de los datos filtrados y normalizados_
+
+
+Para solucionar el ruido que pueda existir en la varianza, realizamos dos transformaciones para los datos de conteo para estabilizar la varianza a través de la media: la transformación de logaritmo regularizado o rlog (M. I. Love, Huber, and Anders 2014) , y la transformación de estabilización de varianza para datos binomiales negativos con una tendencia de dispersión media (Anders y Huber 2010), que se ha implementado con la función vst. Al transformar los datos por rlog o VST, convertimos los datos en homocedasticos. En los siguientes dos gráficos se puede observar el efecto de las transformaciones. 
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Trazamos la desviación estándar de cada fila (genes) contra la media:
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+meanSdPlot(cts, ranks = FALSE)
+
+# Y para los recuentos transformados por logaritmo después de agregar un pseudocuenta de 1:
+log.cts.one <- log2(cts + 1)
+```
+_Fig 3. Diagrama de la desviación estándar de cada fila (genes) contra la media_
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+_Fig 4. Diagrama de la desviación estándar de cada fila (genes) contra la media con los recuentos transformados por logaritmo_
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# CONVERSIÓN DE DATOS:
+
+dge <- group.study.norm
+dds = as.DESeqDataSet(dge)
+
+# Comprobación del filtraje extra:
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+dge <- dge[rowSums(dge$counts) > 1, ]
+all(rownames(dge) == rownames(dds))
+
+```
+
+### Análisis exploratorio
+
+Se ha calculado la distancia entre las muestras y se ha graficado con "pheatmap". También se ha calculado la distancia de Poisson para tener dos puntos de vista. Como podemos ver, en los dos gráficos, la gran cantidad de muestras tienen similitudes muy dispares entre ellas.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+rld <- rlog(dds, blind = FALSE)
+sampleDists <- dist(t(assay(rld)))
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(names(rld$sizeFactor))
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette(rev(brewer.pal(9, "Greens")))(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+_Fig 5. "Pheatmap" de las distancias entre muestras usando los valores transformados de rlog_
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Distancias de Poisson:
+poisd <- PoissonDistance(t(counts(dds)))
+
+samplePoisDistMatrix <- as.matrix(poisd$dd)
+rownames(samplePoisDistMatrix) <- paste(names(rld$sizeFactor))
+colnames(samplePoisDistMatrix) <- NULL
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+_Fig 6. "Pheatmap" de las distancias entre muestras usando la distancia de Poisson_
+
+
+
+También se ha visualizado la distancia entre muestras con un análisis de componentes principales diferenciando por grupo.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+plotPCA(rld, intgroup = c("group"))
+```
+_Fig 7. Gráfico del análisis de componentes principales donde se visualizan las distancias entre muestras separadas por grupo_
+
+Como podemos ver más claramente en este gráfico, el grupo de tejido infiltrado extensivamente en linfoides (ELI) es el que más distancia tiene con las muestras de los otros dos grupos.
+
+
+
+### Identificación de genes diferencialmente expresados 
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Construyendo una tabla resultados
+dds <- DESeq(dds)
+res <- results(dds)
+
+summary(res)
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Comparaciones entre grupos:
+
+res.SFI_ELI <- results(dds, contrast = c("group", "SFI", "ELI"))
+res.SFI_NIT <- results(dds, contrast = c("group", "SFI", "NIT"))
+res.NIT_ELI <- results(dds, contrast = c("group", "NIT", "ELI"))
+
+mcols(res.SFI_ELI, use.names = TRUE)
+mcols(res.SFI_NIT, use.names = TRUE)
+mcols(res.NIT_ELI, use.names = TRUE)
+```
+
+Como podemos ver en las siguientes tablas, para la comparación SFI-ELI, los genes diferencialmente expresados suman un total de 1.395 genes (544 up-regulated y 851 down-regulated), para la comparación SFI-NIT, los genes diferencialmente expresados son 1.469 (824 up-regulated y 645 down-regulated) y para la comparación NIT vs ELI, los genes diferencialmente expresados son un total de 1.554 (539 up-regulated y 1015 down-regulated).
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Comparación SFI vs ELI
+summary(res.SFI_ELI)
+
+# Comparación SFI vs NIT
+summary(res.SFI_NIT)
+
+# Comparación NIT vs ELI
+summary(res.NIT_ELI)
+```
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+res.05 <- results(dds, alpha = 0.05)
+table(res.05$padj < 0.05)
+
+resLFC1 <- results(dds, lfcThreshold = 1)
+table(resLFC1$padj < 0.1)
+
+```
+
+Para visualizar los genes diferencialmente expresados en las distintas comparaciones hechas, se ha creado un diagrama de Venn donde se muestran los genes diferencialmente expresados que hay en cada grupo de comparaciones y en común entre varias comparaciones. En este diagrama se puede ver que hay pocos genes que esten diferencialmente expresados en las 3 comparaciones a la vez, pero también hay pocos genes diferencialmente expresados en cada grupo de comparaciones.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#1.554 (539 up-regulated y 1015
+venn_data <- data.frame(SFIvsELI = res.SFI_ELI$padj<0.05,
+                        SFIvsNIT = res.SFI_NIT$padj<0.05,
+                        ELIvsNIT = res.NIT_ELI$padj<0.05)
+
+
+vennDiagram(venn_data)
+title("Genes in common between the three comparisons\n Genes selected with FDR < 0.1 and logFC > 1")
+```
+_Fig 8. Diagrama de Venn de los genes diferencialmente expresados en las tres comparaciones_
+
+
+
+
+Finalmente, con un diagrama MA, podemos ver la distribución de los coeficientes estimados en las distintas comparaciones del modelo. Los genes con un p-valor ajustado por debajo de 0.1 se muestran en rojo. Estos gráficos nos ayudan a comprobar que los datos normalizados nos dan el patrón esperado. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+DESeq2::plotMA(res.SFI_ELI, ylim = c(-15, 15))
+```
+_Fig 9. Diagrama MA de la comparación entre los grupos SFI y ELI_
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+DESeq2::plotMA(res.SFI_NIT, ylim = c(-15, 15))
+```
+_Fig 10. Diagrama MA de la comparación entre los grupos SFI y NIT_
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+DESeq2::plotMA(res.NIT_ELI, ylim = c(-15, 15))
+```
+_Fig 11. Diagrama MA de la comparación entre los grupos NIT y ELI_
+
+
+
+
+
+
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+### Anotación de los resultados
+
+res.SFI_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_ELI),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.SFI_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_ELI),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+res.SFI_NIT$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_NIT),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.SFI_NIT$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_NIT),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+res.NIT_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.NIT_ELI),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.NIT_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.NIT_ELI),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+res.SFI_ELI.Ordered <- res.SFI_ELI[order(res.SFI_ELI$padj),]
+head(res.SFI_ELI.Ordered)
+
+res.SFI_NIT.Ordered <- res.SFI_NIT[order(res.SFI_NIT$padj),]
+head(res.SFI_NIT.Ordered)
+
+res.NIT_ELI.Ordered <- res.NIT_ELI[order(res.NIT_ELI$padj),]
+head(res.NIT_ELI.Ordered)
+```
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+resOrdered <- res[order(res$padj),]
+head(resOrdered)
+```
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Los resultados los guardamos en archivo .csv:
+resOrderedDF <- as.data.frame(resOrdered)[1:100, ]
+write.csv(resOrderedDF, file = "results/results.csv")
+```
+
+
+
+```{r echo=FALSE, eval=FALSE, results='hide', warning=FALSE, message=FALSE}
+# Creamos un directorio con el informe:
+htmlRep <- HTMLReport(shortName = "report", title = "My report",
+                      reportDirectory = "./report")
+publish(resOrderedDF, htmlRep)
+url <- finish(htmlRep)
+browseURL(url)
+```
+
+
+
+
+
+## Discusión
+
+En estos resultados, hay que tener en cuenta que los datos muestras una dispersión muy alta en las varianzas, por lo que no se puede afirmar con seguridad que los pocos genes que hay diferencialmente expresados signifiquen que los distintos tratamientos tienen resultados distintos. 
+
+
+
+## Bibliografía
+
+(1) Gonzalo Sanz, Ricardo, and Alex Sánchez-Pla. 2020. _“RNAseq pipeline - Bioconductor”_ Cas d'estudi.
+
+(2) Love, Michael I., Wolfgang Huber, and Simon Anders. 2014. “Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.” Genome Biology 15 (12). BioMed Central Ltd: 550+. doi:10.1186/s13059-014-0550-8.
+
+(3) Anders, Simon, and Wolfgang Huber. 2010. “Differential expression analysis for sequence count data.” Genome Biology 11 (10). BioMed Central Ltd: R106+. doi:10.1186/gb-2010-11-10-r106.
+
+## Apéndice
+
+```{r eval=FALSE}
+# Creamos dos directorios para tener clasificados los datos y los resultados:
+dir.create("data")
+dir.create("results")
+```
+
+```{r eval=FALSE}
+# Librerías usadas para el codigo:
+library(edgeR)
+library(DEFormats)
+library(pheatmap)
+library(RColorBrewer)
+library(PoiClaClu)
+library(vsn)
+library(SGSeq)
+library(DESeq)
+library(DESeq2)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(limma)
+library(Gviz)
+library(ReportingTools)
+
+```
+
+### 1. Definición de los datos
+
+```{r eval=FALSE}
+
+
+# Lectura de los datos:
+targets <- read.csv("data/targets.csv", header = TRUE, sep=",")
+counts <- read.csv("data/counts.csv", header = FALSE, sep = ";")
+
+# Creamos los vectores que van a ser los nombres de las filas y columnas:
+
+nomcol <- as.vector(counts$V1) # Nombres de ENSEMBL
+nomcol <- gsub("\\..*", "", nomcol, fixed = FALSE) # Corregiremos los nombres de ENSEMBL
+  # Ponemos los nombres a las columnas:
+    counts <- data.frame(t(counts)) # Transponemos la base de datos
+    colnames(counts) <- nomcol # Cambiamos el nombre de las columnas
+    
+nom <- as.vector(counts[,1]) # Nombres de genes
+  # Ponemos nombres a las columnas:
+    counts <- data.frame(t(counts)) # Transponemos la base de datos
+    colnames(counts)[1:293] <- nom # Cambiamos el nombre de las columnas
+    counts <- data.frame(t(counts)) # Recolocamos la base de datos
+  # Ponemos titulo a la columna 1:
+    colnames(counts)[1] <- "Sample_Name"
+  counts = counts[-1,] # Eliminamos la fila usada para los titulos
+    
+    
+nom.tar <- as.vector(targets$Sample_Name) # Nombres de genes
+  # Ponemos nombres a las columnas
+    targets <- data.frame(t(targets))
+    colnames(targets) <- nom.tar
+    targets <- data.frame(t(targets)) # Recolocamos la base de datos
+```
+
+```{r eval=FALSE}
+group.NIT <- subset(targets, targets$Group == "NIT")
+group.NIT <- group.NIT[sample(nrow(group.NIT), 10), ]
+
+group.SFI <- subset(targets, targets$Group == "SFI")
+group.SFI <- group.SFI[sample(nrow(group.SFI), 10), ]
+
+group.ELI <- subset(targets, targets$Group == "ELI") 
+group.ELI <- group.ELI[sample(nrow(group.ELI), 10), ]
+
+# Creamos un dataframe nuevo con las 10 muestras aleatorias de cada grupo:  
+groups.10 <- rbind(group.ELI, group.NIT, group.SFI)
+```
+
+```{r eval=FALSE}
+# Extraemos de la base de datos "counts" aquellos datos que pertenecen a la submuestra
+#de 10 muestras aleatorias de cada tipo que hemos escogido:
+
+group.10 <- merge(groups.10,counts, by = "Sample_Name")
+count.study <- dplyr::select(group.10, 
+                             -Sample_Name, 
+                             -Experiment, 
+                             -SRA_Sample, 
+                             -Grupo_analisis, 
+                             -body_site,
+                             -molecular_data_type, 
+                             -sex, 
+                             -Group, 
+                             ShortName)
+group.study <- dplyr::select(group.10, Group)
+
+group.study <- as.vector.factor(group.study$Group)
+
+# Creamos un vector con la primera columna para usarla de titulo:
+nam2 <- c(as.vector(count.study[1:30,1])) 
+
+count.study <- data.frame(t(count.study)) # Transponemos la base de datos
+colnames(count.study)[1:30] <- nam2 # Cambiamos el nombre de todas las columnas
+
+
+# Eliminamos la primera fila que ya hemos convertido en titulos de columna:
+count.study = count.study[-1,]
+# Pasamos todos los datos a formato númerico:
+count.study[] <- lapply(count.study, as.numeric) 
+
+# Creamos el vector "geneid" para usarlo en la lista DGE:
+gene.id = data.frame(nomcol[2:56203])
+
+
+
+group.count.study <- DGEList(counts=count.study, 
+                             group = factor(group.study), 
+                             genes = gene.id)
+```
+
+### 2.Preprocesado de los datos: Filtraje y Normalización
+
+```{r eval=FALSE}
+
+# Filtraje de los datos:
+
+# Contamos el número incial de filas
+print(c("El número incial de datos es",nrow(group.count.study))) 
+
+group.count.study <- group.count.study[rowSums(group.count.study$counts) > 1, ]
+countsPerMillion <- cpm(group.count.study)
+countCheck <- countsPerMillion > 1
+
+keep <- which(rowSums(countCheck) >= 2)
+study.filter <- group.count.study[keep,]
+
+
+# comprobamos que el filtraje ha reducido el número de filas:
+print(c("El número final de datos es",nrow(study.filter))) 
+# Normalización de los datos:
+group.study.norm <- calcNormFactors(study.filter, method="TMM")
+```
+
+
+```{r eval=FALSE}
+# Comprobamos la normalización:
+plotMDS(group.count.study)
+```
+
+```{r eval=FALSE}
+plotMDS(group.study.norm)
+```
+
+
+```{r eval=FALSE}
+# Trazamos la desviación estándar de cada fila (genes) contra la media:
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+meanSdPlot(cts, ranks = FALSE)
+
+# Y para los recuentos transformados por logaritmo 
+# después de agregar un pseudocuenta de 1:
+log.cts.one <- log2(cts + 1)
+```
+
+```{r eval=FALSE}
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+
+```{r eval=FALSE}
+# CONVERSIÓN DE DATOS:
+
+dge <- group.study.norm
+dds = as.DESeqDataSet(dge)
+
+# Comprobación del filtraje extra:
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+dge <- dge[rowSums(dge$counts) > 1, ]
+all(rownames(dge) == rownames(dds))
+
+```
+
+```{r eval=FALSE}
+rld <- rlog(dds, blind = FALSE)
+sampleDists <- dist(t(assay(rld)))
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(names(rld$sizeFactor))
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette(rev(brewer.pal(9, "Greens")))(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+```{r eval=FALSE}
+# Distancias de Poisson:
+poisd <- PoissonDistance(t(counts(dds)))
+
+samplePoisDistMatrix <- as.matrix(poisd$dd)
+rownames(samplePoisDistMatrix) <- paste(names(rld$sizeFactor))
+colnames(samplePoisDistMatrix) <- NULL
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+
+```{r eval=FALSE}
+plotPCA(rld, intgroup = c("group"))
+```
+
+### 3.Identificación de genes diferencialmente expresados 
+
+```{r eval=FALSE}
+# Construyendo una tabla resultados
+dds <- DESeq(dds)
+res <- results(dds)
+
+summary(res)
+```
+
+```{r eval=FALSE}
+# Comparaciones entre grupos:
+
+res.SFI_ELI <- results(dds, contrast = c("group", "SFI", "ELI"))
+res.SFI_NIT <- results(dds, contrast = c("group", "SFI", "NIT"))
+res.NIT_ELI <- results(dds, contrast = c("group", "NIT", "ELI"))
+
+mcols(res.SFI_ELI, use.names = TRUE)
+mcols(res.SFI_NIT, use.names = TRUE)
+mcols(res.NIT_ELI, use.names = TRUE)
+```
+
+```{r eval=FALSE}
+# Comparación SFI vs ELI
+summary(res.SFI_ELI)
+
+# Comparación SFI vs NIT
+summary(res.SFI_NIT)
+
+# Comparación NIT vs ELI
+summary(res.NIT_ELI)
+```
+
+
+```{r eval=FALSE}
+res.05 <- results(dds, alpha = 0.05)
+table(res.05$padj < 0.05)
+
+resLFC1 <- results(dds, lfcThreshold = 1)
+table(resLFC1$padj < 0.1)
+
+```
+
+```{r eval=FALSE}
+#1.554 (539 up-regulated y 1015
+venn_data <- data.frame(SFIvsELI = res.SFI_ELI$padj<0.05,
+                        SFIvsNIT = res.SFI_NIT$padj<0.05,
+                        ELIvsNIT = res.NIT_ELI$padj<0.05)
+
+
+vennDiagram(venn_data)
+title("Genes in common between the three comparisons
+      \n Genes selected with FDR < 0.1 and logFC > 1")
+```
+
+```{r eval=FALSE}
+DESeq2::plotMA(res.SFI_ELI, ylim = c(-15, 15))
+```
+
+```{r eval=FALSE}
+DESeq2::plotMA(res.SFI_NIT, ylim = c(-15, 15))
+```
+
+```{r eval=FALSE}
+DESeq2::plotMA(res.NIT_ELI, ylim = c(-15, 15))
+```
+
+
+### 4. Anotación de los resultados
+
+```{r eval=FALSE}
+res.SFI_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_ELI),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.SFI_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_ELI),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+```{r eval=FALSE}
+res.SFI_NIT$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_NIT),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.SFI_NIT$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.SFI_NIT),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+```{r eval=FALSE}
+res.NIT_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.NIT_ELI),
+                     column = "SYMBOL",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+res.NIT_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys = row.names(res.NIT_ELI),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+
+
+
+```{r eval=FALSE}
+res.SFI_ELI.Ordered <- res.SFI_ELI[order(res.SFI_ELI$padj),]
+head(res.SFI_ELI.Ordered)
+
+res.SFI_NIT.Ordered <- res.SFI_NIT[order(res.SFI_NIT$padj),]
+head(res.SFI_NIT.Ordered)
+
+res.NIT_ELI.Ordered <- res.NIT_ELI[order(res.NIT_ELI$padj),]
+head(res.NIT_ELI.Ordered)
+```
+```{r eval=FALSE}
+resOrdered <- res[order(res$padj),]
+head(resOrdered)
+```
+
+
+```{r eval=FALSE}
+# Los resultados los guardamos en archivo .csv:
+resOrderedDF <- as.data.frame(resOrdered)[1:100, ]
+write.csv(resOrderedDF, file = "results/results.csv")
+```
+
+
+
+```{r eval=FALSE}
+# Creamos un directorio con el informe:
+htmlRep <- HTMLReport(shortName = "report", title = "My report",
+                      reportDirectory = "./report")
+publish(resOrderedDF, htmlRep)
+url <- finish(htmlRep)
+browseURL(url)
+```
+
+
+
